@@ -235,6 +235,10 @@ scripts/__pycache__/
 checkpoints_legacy/
 lora_output/
 datasets/
+# Trained adapters + local backups (machine-specific, kept off the repo)
+output/
+output_docker_test/
+vast_backup/
 python_embeded/
 checkpoints_pack/
 issues/

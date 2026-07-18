@@ -1,67 +1,81 @@
 # =============================================================================
-# .dockerignore — ACE-Step 1.5
-# Keep Docker build context small by excluding large / unnecessary files.
+# .dockerignore - Files/folders excluded from Docker build context
 # =============================================================================
+# Purpose: reduce image size, speed up 'docker build', prevent secrets leak.
 
-# Version control
+# --- Secrets & environment ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.token
+openai_key.txt
+
+# --- Git ---
 .git
 .gitignore
+.gitattributes
 
-# Model checkpoints (mount as volumes at runtime instead)
-checkpoints/
-*.safetensors
-*.bin
-*.ckpt
-*.pt
-
-# Generated outputs
-gradio_outputs/
-
-# Python artifacts
-__pycache__/
-*.py[cod]
-*.egg-info/
-dist/
-build/
-*.egg
-
-# Virtual environments
+# --- Python cache & venv ---
 .venv/
 venv/
 env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
 
-# IDE / editor files
+# --- Model checkpoints (downloaded at runtime, NOT baked in) ---
+checkpoints/
+*.safetensors
+*.ckpt
+*.bin
+hf_cache/
+
+# --- Trained outputs (bạn muốn giữ local, không upload) ---
+output/
+runs/
+lora_output/
+*.log
+sidestep.log
+
+# --- Preprocessed tensors (regenerate on Vast.ai) ---
+# UNCOMMENT next line if you have preprocessed tensors and don't want to bundle
+# datasets/vinahouse/phase_a/tensors/
+
+# --- Datasets: NEVER baked into image (transferred via rsync at runtime) ---
+# Data lives on local as source-of-truth; only tensors are rsync'd to instances.
+# This keeps the image small (was accidentally baking ~30GB of phase_b tensors).
+datasets/
+
+# --- Local backups of trained adapters (kept on local only) ---
+vast_backup/
+output_docker_test/
+
+# --- Gradio outputs (generated at runtime, don't bundle) ---
+gradio_outputs/
+outputs/
+tmp/
+temp/
+
+# --- IDE / editor ---
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
-
-# Docker files (don't include Dockerfiles in the build context copy)
-Dockerfile*
-docker-compose*
-
-# OS files
 .DS_Store
 Thumbs.db
 
-# CI/CD
-.github/
+# --- Docker artifacts ---
+Dockerfile.local
+docker-compose.override.yml
 
-# Large docs / assets not needed at runtime
-docs/pics/
-
-# Test / generated output
-output/
-
-# UV lock file needed by Jetson Dockerfile (which installs deps manually),
-# but the generic Dockerfile uses `uv sync --frozen` and REQUIRES it.
-# Do NOT add uv.lock here.
-
-# Windows scripts
-*.bat
-*.ps1
-
-# nano-vllm build artifacts
-acestep/third_parts/nano-vllm/build/
-acestep/third_parts/nano-vllm/nano_vllm.egg-info/
+# --- Notebooks with potentially large outputs ---
+*.ipynb_checkpoints

@@ -1,155 +1,105 @@
 # =============================================================================
-# ACE-Step 1.5 — Generic CUDA Dockerfile
+# ACE-Step 1.5 + Vinahouse LoRA training image for Vast.ai
 # =============================================================================
-#
-# Builds ACE-Step 1.5 for x86_64 Linux servers with NVIDIA GPUs.
-# Uses uv for fast, reproducible dependency installation.
-#
-# Build:
-#   docker build -t acestep .
-#
-# Run (Gradio UI — default):
-#   docker run --gpus all -it --rm \
-#     -p 7860:7860 \
-#     -v $(pwd)/checkpoints:/app/checkpoints \
-#     -v $(pwd)/gradio_outputs:/app/gradio_outputs \
-#     acestep
-#
-# Run (REST API server):
-#   docker run --gpus all -it --rm \
-#     -p 8001:8001 \
-#     -v $(pwd)/checkpoints:/app/checkpoints \
-#     -e ACESTEP_MODE=api \
-#     acestep
-#
+# Design principles:
+#   - Layer 1 (base): CUDA + Python + system deps      -> rarely changes
+#   - Layer 2 (deps): uv + ACE-Step Python packages     -> changes weekly
+#   - Layer 3 (code): repo code + custom scripts        -> changes daily
+#   - Runtime: model checkpoints downloaded on first run (NOT baked in)
 # =============================================================================
 
-# ==================== Build arguments ====================
-ARG CUDA_VERSION=12.8.1
-ARG PYTHON_VERSION=3.11
-ARG UV_VERSION=0.7
+# ---------------------------------------------------------------------------
+# Layer 1: CUDA base with Python 3.11
+# ---------------------------------------------------------------------------
+# Use CUDA 12.4 runtime (matches PyTorch 2.4+ requirements).
+# 'devel' variant includes nvcc for building bitsandbytes/flash-attn wheels.
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
 
-# ==================== Base image ====================
-FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu22.04
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    UV_SYSTEM_PYTHON=1
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=C.UTF-8
-ENV LC_ALL=C.UTF-8
-
-# ==================== System packages ====================
+# System packages layer 1: minimal + software-properties for adding PPAs
 RUN apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common \
-        build-essential \
-        git \
+        ca-certificates \
         curl \
-        wget \
-        # Audio libraries
-        libsndfile1 \
-        libsndfile1-dev \
-        ffmpeg \
-        # Python build deps
-        libffi-dev \
-        libssl-dev \
-    && add-apt-repository ppa:deadsnakes/ppa \
+        gnupg \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         python3.11 \
-        python3.11-dev \
         python3.11-venv \
-    && rm -rf /var/lib/apt/lists/*
+        python3.11-dev \
+        python3.11-distutils \
+        ffmpeg \
+        libsndfile1 \
+        git \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python3
 
-# ==================== uv ====================
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Install uv (fast Python package manager)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && mv /root/.local/bin/uv /usr/local/bin/uv \
+    && mv /root/.local/bin/uvx /usr/local/bin/uvx
 
-# ==================== Project source ====================
-WORKDIR /app
-COPY . /app/
+WORKDIR /workspace
 
-# ==================== Install dependencies via uv ====================
-# Use uv sync with the lockfile for reproducible builds.
-# --no-dev skips dev dependencies, --frozen uses exact lockfile versions.
-RUN uv sync --frozen --no-dev --python python3.11
+# ---------------------------------------------------------------------------
+# Layer 2: Python dependencies (leverages Docker layer caching)
+# ---------------------------------------------------------------------------
+# Copy pyproject.toml + uv.lock first so 'uv sync' cache is reused when
+# only source code changes.
+# Also copy vendored 'nano-vllm' because pyproject.toml has a local path
+# dependency to it (acestep/third_parts/nano-vllm/). Without this, uv sync
+# fails with "Distribution not found".
+COPY pyproject.toml uv.lock ./
+COPY acestep/third_parts/nano-vllm ./acestep/third_parts/nano-vllm
 
-# ==================== Runtime directories ====================
-RUN mkdir -p /app/checkpoints /app/gradio_outputs /app/output
+# Install project deps into a .venv (matches local dev environment)
+RUN uv sync --frozen --no-install-project
 
-# ==================== Environment ====================
-# Bind to all interfaces for Docker port-mapping
-ENV GRADIO_SERVER_NAME=0.0.0.0
-ENV ACESTEP_API_HOST=0.0.0.0
+# ---------------------------------------------------------------------------
+# Layer 3: Project code + scripts + dataset
+# ---------------------------------------------------------------------------
+# Copy everything (respecting .dockerignore).
+# This will overwrite the earlier pyproject.toml/uv.lock (same content, no-op).
+COPY . .
 
-# Default startup mode: "gradio" for the web UI, "api" for the REST server
-ENV ACESTEP_MODE=gradio
+# Install ace-step from source (was skipped earlier with --no-install-project)
+RUN uv sync --frozen
 
-# Auto-initialize models on startup
-ENV ACESTEP_INIT_SERVICE=true
+# Formally add training extras via 'uv add' so they:
+#   1) get pinned into pyproject.toml + uv.lock
+#   2) survive future 'uv run' auto-sync (which purges packages not in lock)
+# This is the KEY fix - 'uv pip install' would be purged by the next auto-sync.
+RUN uv add --no-sync \
+        "bitsandbytes>=0.45.0" \
+        "librosa>=0.11.0" \
+        "soundfile>=0.13.0" \
+        "openai>=2.0.0" \
+    && uv sync --frozen
 
-# Default models
-ENV ACESTEP_CONFIG_PATH=acestep-v15-turbo
-ENV ACESTEP_LM_MODEL_PATH=acestep-5Hz-lm-4B
-ENV ACESTEP_LLM_BACKEND=pt
+# Make pipeline + vast helper scripts executable
+RUN chmod +x pipeline/*.sh vast/*.sh 2>/dev/null || true
 
-# Disable tokenizers parallelism warnings
-ENV TOKENIZERS_PARALLELISM=false
+# ---------------------------------------------------------------------------
+# Runtime configuration
+# ---------------------------------------------------------------------------
+# Environment defaults (override at runtime with -e)
+ENV ACESTEP_LM_MODEL_PATH=acestep-5Hz-lm-0.6B \
+    ACESTEP_LM_BACKEND=pt \
+    ACESTEP_NO_INIT=true \
+    HF_HOME=/workspace/hf_cache \
+    HUGGINGFACE_HUB_CACHE=/workspace/hf_cache
 
-# ==================== Ports ====================
-# 7860 = Gradio web UI | 8001 = REST API server
-EXPOSE 7860 8001
+# Expose Gradio UI port (in case you launch UI on Vast.ai)
+EXPOSE 7860
 
-# ==================== Health check ====================
-HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
-    CMD curl -sf http://localhost:${GRADIO_PORT:-7860}/ > /dev/null 2>&1 \
-     || curl -sf http://localhost:${ACESTEP_API_PORT:-8001}/health > /dev/null 2>&1 \
-     || exit 1
-
-# ==================== Entrypoint ====================
-COPY <<'ENTRYPOINT_EOF' /app/docker-entrypoint.sh
-#!/usr/bin/env bash
-set -e
-
-echo "==========================================="
-echo "  ACE-Step 1.5"
-echo "==========================================="
-echo "Mode      : ${ACESTEP_MODE}"
-echo "Python    : $(uv run python --version 2>&1)"
-echo "PyTorch   : $(uv run python -c 'import torch; print(torch.__version__)' 2>/dev/null || echo 'N/A')"
-
-if uv run python -c 'import torch; assert torch.cuda.is_available()' 2>/dev/null; then
-    echo "CUDA      : $(uv run python -c 'import torch; print(torch.version.cuda)')"
-    echo "GPU       : $(uv run python -c 'import torch; print(torch.cuda.get_device_name(0))')"
-    echo "Memory    : $(uv run python -c 'import torch; p=torch.cuda.get_device_properties(0); print(f"{p.total_memory/1024**3:.1f} GB")')"
-else
-    echo "CUDA      : NOT AVAILABLE — running on CPU"
-    echo "           (make sure you launched with --gpus all)"
-fi
-echo "==========================================="
-
-# Build --init_service flags
-INIT_ARGS=""
-if [ "${ACESTEP_INIT_SERVICE:-true}" = "true" ]; then
-    INIT_ARGS="--init_service true"
-    [ -n "${ACESTEP_CONFIG_PATH:-}" ]   && INIT_ARGS="${INIT_ARGS} --config_path ${ACESTEP_CONFIG_PATH}"
-    [ -n "${ACESTEP_LM_MODEL_PATH:-}" ] && INIT_ARGS="${INIT_ARGS} --init_llm true --lm_model_path ${ACESTEP_LM_MODEL_PATH}"
-    echo "Auto-init    : DiT=${ACESTEP_CONFIG_PATH:-auto}  LM=${ACESTEP_LM_MODEL_PATH:-none}"
-fi
-
-if [ "${ACESTEP_MODE}" = "api" ]; then
-    echo "Starting REST API server on 0.0.0.0:${ACESTEP_API_PORT:-8001} ..."
-    exec uv run python -m acestep.api_server \
-        --host "${ACESTEP_API_HOST:-0.0.0.0}" \
-        --port "${ACESTEP_API_PORT:-8001}" \
-        ${ACESTEP_EXTRA_ARGS:-}
-else
-    echo "Starting Gradio UI on 0.0.0.0:${GRADIO_PORT:-7860} ..."
-    exec uv run python -m acestep.acestep_v15_pipeline \
-        --server-name "${GRADIO_SERVER_NAME:-0.0.0.0}" \
-        --port "${GRADIO_PORT:-7860}" \
-        --backend "${ACESTEP_LLM_BACKEND:-pt}" \
-        ${INIT_ARGS} \
-        ${ACESTEP_EXTRA_ARGS:-}
-fi
-ENTRYPOINT_EOF
-
-RUN chmod +x /app/docker-entrypoint.sh
-
-ENTRYPOINT ["/app/docker-entrypoint.sh"]
+# Default command: interactive bash so you can inspect/run manually
+# Override with 'docker run ... bash datasets/vinahouse/scripts/train_lokr_pilot.sh'
+CMD ["/bin/bash"]
