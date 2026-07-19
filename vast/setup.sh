@@ -33,7 +33,7 @@ git reset --hard "origin/$BRANCH"
 echo "==> [2/4] Download base models (skips if already present)"
 uv run acestep-download --model acestep-v15-base
 uv run acestep-download --model acestep-v15-xl-sft
-uv run acestep-download --model acestep-5Hz-lm-1.7B
+uv run acestep-download --model acestep-5Hz-lm-4B
 
 echo "==> [3/4] Recreate xl_sft symlink"
 cd "$WORK/checkpoints"
