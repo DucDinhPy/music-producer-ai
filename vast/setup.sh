@@ -21,7 +21,14 @@ WORK=/workspace
 
 cd "$WORK"
 
-echo "==> [1/4] Sync code from $REPO_URL ($BRANCH)"
+echo "==> [1/5] Install system tools (nano, tmux)"
+# Only run apt if any tool is missing (keeps re-runs fast).
+if ! command -v nano >/dev/null 2>&1 || ! command -v tmux >/dev/null 2>&1; then
+    apt-get update -qq && apt-get install -y -qq nano tmux || \
+        echo "[warn] apt install failed; install nano/tmux manually if needed"
+fi
+
+echo "==> [2/5] Sync code from $REPO_URL ($BRANCH)"
 git init -q                                   # no-op if already a git repo
 # Always repoint origin to YOUR repo (the baked image ships upstream's origin)
 git remote remove origin 2>/dev/null || true
@@ -32,17 +39,17 @@ git fetch origin "$BRANCH"
 git reset --hard "origin/$BRANCH"
 git checkout -B "$BRANCH" --track "origin/$BRANCH"
 
-echo "==> [2/4] Download base models (skips if already present)"
+echo "==> [3/5] Download base models (skips if already present)"
 uv run acestep-download --model acestep-v15-base
 uv run acestep-download --model acestep-v15-xl-sft
 uv run acestep-download --model acestep-5Hz-lm-4B
 
-echo "==> [3/4] Recreate xl_sft symlink"
+echo "==> [4/5] Recreate xl_sft symlink"
 cd "$WORK/checkpoints"
 ln -sf acestep-v15-xl-sft xl_sft
 cd "$WORK"
 
-echo "==> [4/4] Ensure data/output directories"
+echo "==> [5/5] Ensure data/output directories"
 mkdir -p "$WORK/output"
 mkdir -p "$WORK/datasets/vinahouse/phase_b_dataset_v2/tensors"
 

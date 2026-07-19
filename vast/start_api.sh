@@ -16,7 +16,7 @@ set -euo pipefail
 # ---- Main DiT model ----
 MAIN_MODEL="acestep-v15-xl-sft"          # or: acestep-v15-xl-sft
 # ---- Your trained adapter (leave empty to run base model only) ----
-LORA_PATH="./output/vinahouse_base_lokr/checkpoints/epoch_200_loss_0.8098/lokr_weights.safetensors"
+LORA_PATH="./output/vinahouse_phase_b_v2_lokr_xl_sft/checkpoints/epoch_200_loss_0.8098/lokr_weights.safetensors"
 LORA_SCALE="1.0"                        # 0.0 - 1.0
 # ---- 5Hz language model ----
 INIT_LLM="true"                         # auto | true | false
