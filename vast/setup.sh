@@ -22,13 +22,15 @@ WORK=/workspace
 cd "$WORK"
 
 echo "==> [1/4] Sync code from $REPO_URL ($BRANCH)"
-if [ ! -d .git ]; then
-    git init -q
-    git remote add origin "$REPO_URL" 2>/dev/null || git remote set-url origin "$REPO_URL"
-fi
-git fetch --depth 1 origin "$BRANCH"
-# reset ONLY tracked files; ignored data/venv/checkpoints/output are untouched
+git init -q                                   # no-op if already a git repo
+# Always repoint origin to YOUR repo (the baked image ships upstream's origin)
+git remote remove origin 2>/dev/null || true
+git remote add origin "$REPO_URL"
+git fetch origin "$BRANCH"
+# Sync working tree, then create a TRACKING branch so plain 'git pull' works
+# forever after. Ignored data/venv/checkpoints/output are left untouched.
 git reset --hard "origin/$BRANCH"
+git checkout -B "$BRANCH" --track "origin/$BRANCH"
 
 echo "==> [2/4] Download base models (skips if already present)"
 uv run acestep-download --model acestep-v15-base
