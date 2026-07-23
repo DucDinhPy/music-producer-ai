@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -55,25 +56,73 @@ def separate_folder(
             "Hãy activate venv rồi cài: python -m pip install --upgrade bs-roformer-infer"
         )
 
-    # Dùng CLI chính thức để tránh phụ thuộc Python API nội bộ của package.
-    # bs-roformer-infer tự tải model mặc định ở lần chạy đầu tiên.
-    cmd = [
-        cli,
-        "--input_folder",
-        str(input_dir),
-        "--store_dir",
-        str(output_dir),
-    ]
-
     if device not in {"auto", ""}:
         print(
             "[warn] --device được giữ để tương thích command hiện tại, "
             "nhưng bs-roformer-infer CLI sẽ tự chọn device nếu không hỗ trợ flag này."
         )
 
-    subprocess.run(cmd, check=True)
+    wav_files = [path for path in audio_files if path.suffix.lower() == ".wav"]
+    needs_conversion = len(wav_files) != len(audio_files)
+
+    if needs_conversion:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            raise RuntimeError(
+                "Input có file không phải WAV nhưng không tìm thấy ffmpeg để convert."
+            )
+
+        with tempfile.TemporaryDirectory(prefix="bs_roformer_wav_") as tmp_dir:
+            wav_input_dir = Path(tmp_dir)
+            print(f"Convert sang WAV tạm: {wav_input_dir}")
+
+            for index, src in enumerate(audio_files, start=1):
+                dst = wav_input_dir / f"{index:05d}_{src.stem}.wav"
+                if src.suffix.lower() == ".wav":
+                    shutil.copy2(src, dst)
+                else:
+                    subprocess.run(
+                        [
+                            ffmpeg,
+                            "-y",
+                            "-hide_banner",
+                            "-loglevel",
+                            "error",
+                            "-i",
+                            str(src),
+                            "-ar",
+                            "44100",
+                            "-ac",
+                            "2",
+                            str(dst),
+                        ],
+                        check=True,
+                    )
+
+            _run_bs_roformer(cli, wav_input_dir, output_dir)
+    else:
+        _run_bs_roformer(cli, input_dir, output_dir)
 
     print("Hoàn tất tách stem.")
+
+
+def _run_bs_roformer(
+    cli: str,
+    input_dir: Path,
+    output_dir: Path,
+) -> None:
+    # Dùng CLI chính thức để tránh phụ thuộc Python API nội bộ của package.
+    # bs-roformer-infer tự tải model mặc định ở lần chạy đầu tiên.
+    subprocess.run(
+        [
+            cli,
+            "--input_folder",
+            str(input_dir),
+            "--store_dir",
+            str(output_dir),
+        ],
+        check=True,
+    )
 
 
 def main() -> None:
