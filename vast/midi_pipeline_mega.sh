@@ -20,6 +20,7 @@
 #   export MEGA_EMAIL="your@email.com"
 #   export MEGA_PASSWORD="your-mega-password"
 #   export MEGA_DATA_URL="https://mega.nz/folder/..."
+#   export PROCESS_SCRIPT="/workspace/scripts/run_bs_roformer_muscriptor_batch.sh"
 #   bash vast/midi_pipeline_mega.sh
 #
 # Optional: create vast/midi_pipeline.env on the Vast machine only. Do NOT commit it.
@@ -58,10 +59,10 @@ BS_ROFORMER_INSTALL_MODE="${BS_ROFORMER_INSTALL_MODE:-package}"
 BS_ROFORMER_REPO_URL="${BS_ROFORMER_REPO_URL:-https://github.com/lucidrains/BS-RoFormer.git}"
 BS_ROFORMER_DIR="${BS_ROFORMER_DIR:-$TOOLS_DIR/BS-RoFormer}"
 
-# Muscriptor install.
-# Fill this with the real repo URL you want to use.
-MUSCRIPTOR_REPO_URL="${MUSCRIPTOR_REPO_URL:-https://github.com/<owner>/<muscriptor-repo>.git}"
-MUSCRIPTOR_DIR="${MUSCRIPTOR_DIR:-$TOOLS_DIR/muscriptor}"
+# Muscriptor install. This matches the command you used manually:
+#   python -m pip install git+https://github.com/muscriptor/muscriptor.git
+MUSCRIPTOR_PIP_SPEC="${MUSCRIPTOR_PIP_SPEC:-git+https://github.com/muscriptor/muscriptor.git}"
+MUSCRIPTOR_DIR="${MUSCRIPTOR_DIR:-}"
 
 # Python environment for this pipeline. Separate from ACE-Step's env.
 VENV_DIR="${VENV_DIR:-$WORK/.venv-midi-pipeline}"
@@ -74,11 +75,6 @@ if [ -f "$WORK/vast/midi_pipeline.env" ]; then
 fi
 
 echo "==> [0/7] Validate config"
-if [ "$MUSCRIPTOR_REPO_URL" = "https://github.com/<owner>/<muscriptor-repo>.git" ]; then
-    echo "[error] Set MUSCRIPTOR_REPO_URL to the real Muscriptor git repo URL."
-    exit 1
-fi
-
 if [ "$DOWNLOAD_MODE" = "public" ] && [ -z "$MEGA_DATA_URL" ]; then
     echo "[error] DOWNLOAD_MODE=public requires MEGA_DATA_URL."
     exit 1
@@ -143,19 +139,7 @@ else
 fi
 
 echo "==> [4/7] Download/install Muscriptor"
-if [ ! -d "$MUSCRIPTOR_DIR/.git" ]; then
-    git clone "$MUSCRIPTOR_REPO_URL" "$MUSCRIPTOR_DIR"
-else
-    git -C "$MUSCRIPTOR_DIR" pull --ff-only
-fi
-
-if [ -f "$MUSCRIPTOR_DIR/requirements.txt" ]; then
-    python -m pip install -r "$MUSCRIPTOR_DIR/requirements.txt"
-fi
-
-if [ -f "$MUSCRIPTOR_DIR/pyproject.toml" ] || [ -f "$MUSCRIPTOR_DIR/setup.py" ]; then
-    python -m pip install -e "$MUSCRIPTOR_DIR"
-fi
+python -m pip install --upgrade "$MUSCRIPTOR_PIP_SPEC"
 
 echo "==> [5/7] Download dataset from MEGA -> $DATA_DIR"
 if [ "$DOWNLOAD_MODE" = "public" ]; then
