@@ -66,6 +66,11 @@ MUSCRIPTOR_DIR="${MUSCRIPTOR_DIR:-}"
 
 # Python environment for this pipeline. Separate from ACE-Step's env.
 VENV_DIR="${VENV_DIR:-$WORK/.venv-midi-pipeline}"
+
+# Vast images can have CUDA 12.x drivers. Installing an incompatible newer
+# PyTorch wheel (for example cu130) makes torch.cuda unavailable.
+INSTALL_TORCH_CUDA="${INSTALL_TORCH_CUDA:-true}"
+PYTORCH_CUDA_INDEX_URL="${PYTORCH_CUDA_INDEX_URL:-https://download.pytorch.org/whl/cu126}"
 # =============================================================================
 
 if [ -f "$WORK/vast/midi_pipeline.env" ]; then
@@ -133,6 +138,13 @@ fi
 # shellcheck disable=SC1091
 source "$VENV_DIR/bin/activate"
 python -m pip install --upgrade pip setuptools wheel
+
+if [ "$INSTALL_TORCH_CUDA" = "true" ]; then
+    echo "==> Install PyTorch CUDA wheel from $PYTORCH_CUDA_INDEX_URL"
+    python -m pip install --upgrade \
+        --index-url "$PYTORCH_CUDA_INDEX_URL" \
+        torch torchvision torchaudio
+fi
 
 echo "==> [3/7] Install BS-RoFormer tooling"
 if [ "$BS_ROFORMER_INSTALL_MODE" = "package" ]; then
