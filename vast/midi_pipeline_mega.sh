@@ -3,7 +3,7 @@
 # vast/midi_pipeline_mega.sh  --  Run this ON a Vast.ai instance
 # =============================================================================
 # What it does:
-#   1. Installs system tools: git, ffmpeg, Python venv tools, megatools.
+#   1. Installs system tools: git, ffmpeg, Python venv tools, MEGA tools.
 #   2. Creates a separate Python venv for the MIDI/stem pipeline.
 #   3. Downloads/installs BS-RoFormer tooling and Muscriptor.
 #   4. Downloads your Vinahouse audio dataset from MEGA.
@@ -40,7 +40,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-$WORK/output/midi_pipeline}"
 PROCESS_SCRIPT="${PROCESS_SCRIPT:-$WORK/scripts/run_bs_roformer_muscriptor_batch.sh}"
 
 # MEGA download.
-# DOWNLOAD_MODE=public  -> use MEGA_DATA_URL with megadl.
+# DOWNLOAD_MODE=public  -> use MEGA_DATA_URL with MEGAcmd's mega-get.
 # DOWNLOAD_MODE=account -> use MEGA_DOWNLOAD_REMOTE_DIR from your MEGA account.
 DOWNLOAD_MODE="${DOWNLOAD_MODE:-public}"
 MEGA_DATA_URL="${MEGA_DATA_URL:-}"                    # Example: https://mega.nz/folder/xxxx#yyyy
@@ -97,6 +97,7 @@ echo "==> [1/7] Install system tools"
 if ! command -v git >/dev/null 2>&1 || \
    ! command -v ffmpeg >/dev/null 2>&1 || \
    ! command -v megadl >/dev/null 2>&1 || \
+   ! command -v mega-get >/dev/null 2>&1 || \
    ! command -v python3 >/dev/null 2>&1; then
     apt-get update -qq
     apt-get install -y -qq \
@@ -111,6 +112,18 @@ if ! command -v git >/dev/null 2>&1 || \
         rsync \
         unzip \
         wget
+fi
+
+if ! command -v mega-get >/dev/null 2>&1; then
+    echo "==> Install MEGAcmd for public MEGA folder downloads"
+    if ! apt-get install -y -qq megacmd; then
+        . /etc/os-release
+        MEGACMD_UBUNTU_VERSION="${MEGACMD_UBUNTU_VERSION:-$VERSION_ID}"
+        MEGACMD_DEB_URL="${MEGACMD_DEB_URL:-https://mega.nz/linux/repo/xUbuntu_${MEGACMD_UBUNTU_VERSION}/amd64/megacmd-xUbuntu_${MEGACMD_UBUNTU_VERSION}_amd64.deb}"
+        echo "    Downloading: $MEGACMD_DEB_URL"
+        wget -q -O /tmp/megacmd.deb "$MEGACMD_DEB_URL"
+        apt-get install -y -qq /tmp/megacmd.deb
+    fi
 fi
 
 echo "==> [2/7] Create Python venv: $VENV_DIR"
@@ -144,8 +157,9 @@ python -m pip install --upgrade "$MUSCRIPTOR_PIP_SPEC"
 echo "==> [5/7] Download dataset from MEGA -> $DATA_DIR"
 if [ "$DOWNLOAD_MODE" = "public" ]; then
     # Public MEGA folder/file link.
-    # Re-running may skip already downloaded files depending on megatools behavior.
-    megadl --path "$DATA_DIR" "$MEGA_DATA_URL"
+    # MEGAcmd handles modern links such as:
+    #   https://mega.nz/folder/<id>#<key>
+    mega-get "$MEGA_DATA_URL" "$DATA_DIR"
 elif [ "$DOWNLOAD_MODE" = "account" ]; then
     # Private folder inside your MEGA account.
     megacopy \
