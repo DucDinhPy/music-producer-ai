@@ -4,6 +4,8 @@ import argparse
 import json
 import shutil
 import subprocess
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +21,7 @@ def transcribe_stems(
     model: str = "large",
     skip_existing: bool = True,
     fail_fast: bool = False,
+    jobs: int = 1,
     exclude_suffixes: set[str] | None = None,
 ) -> None:
     if not input_dir.exists():
@@ -51,6 +54,7 @@ def transcribe_stems(
     print(f"Input:          {input_dir.resolve()}")
     print(f"Output:         {output_dir.resolve()}")
     print(f"Model:          {model}")
+    print(f"Jobs:           {jobs}")
     print(f"Skip existing:  {skip_existing}")
     print(f"Fail fast:      {fail_fast}")
     print(f"Exclude suffix: {', '.join(sorted(exclude_suffixes)) or '(none)'}")
@@ -62,49 +66,73 @@ def transcribe_stems(
     error_count = 0
 
     with manifest_path.open("a", encoding="utf-8") as manifest:
+        tasks = []
         for index, stem_path in enumerate(wav_files, start=1):
             relative = stem_path.relative_to(input_dir)
             midi_path = output_dir / relative.with_suffix(".mid")
             midi_path.parent.mkdir(parents=True, exist_ok=True)
+            tasks.append((index, stem_path, relative, midi_path))
 
-            print(f"\n[{index}/{len(wav_files)}] {relative}")
-
-            if skip_existing and midi_path.exists() and midi_path.stat().st_size > 0:
-                print(f"Skip existing: {midi_path}")
-                skip_count += 1
-                _write_manifest(manifest, stem_path, midi_path, model, "skipped")
-                continue
-
-            cmd = [
-                cli,
-                "transcribe",
-                "--model",
-                model,
-                str(stem_path),
-                "-o",
-                str(midi_path),
-            ]
-
-            try:
-                subprocess.run(cmd, check=True)
-            except subprocess.CalledProcessError as exc:
-                error_count += 1
+        if jobs <= 1:
+            for index, stem_path, relative, midi_path in tasks:
+                print(f"\n[{index}/{len(wav_files)}] {relative}")
+                result = _transcribe_one(cli, stem_path, midi_path, model, skip_existing)
                 _write_manifest(
                     manifest,
                     stem_path,
                     midi_path,
                     model,
-                    "error",
-                    returncode=exc.returncode,
+                    result["status"],
+                    returncode=result.get("returncode"),
+                    error=result.get("error"),
                 )
-                print(f"[error] Muscriptor failed with code {exc.returncode}")
-                if fail_fast:
-                    raise
-                continue
+                ok_count, skip_count, error_count = _update_counts(
+                    result["status"],
+                    ok_count,
+                    skip_count,
+                    error_count,
+                )
+                _print_result(result, midi_path)
+                if fail_fast and result["status"] == "error":
+                    raise RuntimeError(result.get("error") or "Muscriptor failed")
+        else:
+            print("")
+            print(f"Running {jobs} Muscriptor workers in parallel.")
+            with ThreadPoolExecutor(max_workers=jobs) as executor:
+                future_to_task = {
+                    executor.submit(
+                        _transcribe_one,
+                        cli,
+                        stem_path,
+                        midi_path,
+                        model,
+                        skip_existing,
+                    ): (index, stem_path, relative, midi_path)
+                    for index, stem_path, relative, midi_path in tasks
+                }
 
-            ok_count += 1
-            _write_manifest(manifest, stem_path, midi_path, model, "ok")
-            print(f"Wrote: {midi_path}")
+                for future in as_completed(future_to_task):
+                    index, stem_path, relative, midi_path = future_to_task[future]
+                    print(f"\n[{index}/{len(wav_files)}] {relative}")
+                    result = future.result()
+                    _write_manifest(
+                        manifest,
+                        stem_path,
+                        midi_path,
+                        model,
+                        result["status"],
+                        returncode=result.get("returncode"),
+                        error=result.get("error"),
+                    )
+                    ok_count, skip_count, error_count = _update_counts(
+                        result["status"],
+                        ok_count,
+                        skip_count,
+                        error_count,
+                    )
+                    _print_result(result, midi_path)
+                    if fail_fast and result["status"] == "error":
+                        raise RuntimeError(result.get("error") or "Muscriptor failed")
 
     print("")
     print("Hoàn tất Muscriptor batch.")
@@ -118,6 +146,78 @@ def _stem_suffix(path: Path) -> str:
     return path.stem.rsplit("_", 1)[-1].lower()
 
 
+def _transcribe_one(
+    cli: str,
+    stem_path: Path,
+    midi_path: Path,
+    model: str,
+    skip_existing: bool,
+) -> dict[str, str | int]:
+    if skip_existing and midi_path.exists() and midi_path.stat().st_size > 0:
+        return {"status": "skipped"}
+
+    tmp_path = midi_path.with_name(
+        f".{midi_path.stem}.{uuid.uuid4().hex}.tmp.mid"
+    )
+    tmp_path.unlink(missing_ok=True)
+
+    cmd = [
+        cli,
+        "transcribe",
+        "--model",
+        model,
+        str(stem_path),
+        "-o",
+        str(tmp_path),
+    ]
+
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as exc:
+        tmp_path.unlink(missing_ok=True)
+        return {
+            "status": "error",
+            "returncode": exc.returncode,
+            "error": f"Muscriptor failed with code {exc.returncode}",
+        }
+
+    if not tmp_path.exists() or tmp_path.stat().st_size <= 0:
+        tmp_path.unlink(missing_ok=True)
+        return {
+            "status": "error",
+            "returncode": 0,
+            "error": "Muscriptor finished but did not write a non-empty MIDI file",
+        }
+
+    tmp_path.replace(midi_path)
+    return {"status": "ok"}
+
+
+def _update_counts(
+    status: str | int,
+    ok_count: int,
+    skip_count: int,
+    error_count: int,
+) -> tuple[int, int, int]:
+    if status == "ok":
+        ok_count += 1
+    elif status == "skipped":
+        skip_count += 1
+    elif status == "error":
+        error_count += 1
+    return ok_count, skip_count, error_count
+
+
+def _print_result(result: dict[str, str | int], midi_path: Path) -> None:
+    status = result["status"]
+    if status == "ok":
+        print(f"Wrote: {midi_path}")
+    elif status == "skipped":
+        print(f"Skip existing: {midi_path}")
+    else:
+        print(f"[error] {result.get('error')}")
+
+
 def _write_manifest(
     manifest,
     stem_path: Path,
@@ -125,6 +225,7 @@ def _write_manifest(
     model: str,
     status: str,
     returncode: int | None = None,
+    error: str | int | None = None,
 ) -> None:
     row = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -135,6 +236,8 @@ def _write_manifest(
     }
     if returncode is not None:
         row["returncode"] = returncode
+    if error is not None:
+        row["error"] = str(error)
     manifest.write(json.dumps(row, ensure_ascii=False) + "\n")
     manifest.flush()
 
@@ -166,6 +269,12 @@ def main() -> None:
         help="Transcribe lại cả file MIDI đã tồn tại.",
     )
     parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Số process Muscriptor chạy song song. Thử 2 trước với model large.",
+    )
+    parser.add_argument(
         "--fail-fast",
         action="store_true",
         help="Dừng ngay khi một file lỗi.",
@@ -188,6 +297,7 @@ def main() -> None:
         model=args.model,
         skip_existing=not args.overwrite,
         fail_fast=args.fail_fast,
+        jobs=args.jobs,
         exclude_suffixes=exclude_suffixes,
     )
 
