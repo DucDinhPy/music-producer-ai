@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import shutil
+import subprocess
 from pathlib import Path
-
-from bs_roformer import BSRoformerSession
 
 
 def separate_folder(
@@ -48,12 +48,30 @@ def separate_folder(
     print(f"Device: {device}")
     print(f"Files:  {len(audio_files)}")
 
-    # Model được load một lần và dùng cho toàn bộ folder.
-    with BSRoformerSession(device=device) as session:
-        session.infer(
-            str(input_dir),
-            store_dir=str(output_dir),
+    cli = shutil.which("bs-roformer-infer")
+    if cli is None:
+        raise RuntimeError(
+            "Không tìm thấy CLI 'bs-roformer-infer'. "
+            "Hãy activate venv rồi cài: python -m pip install --upgrade bs-roformer-infer"
         )
+
+    # Dùng CLI chính thức để tránh phụ thuộc Python API nội bộ của package.
+    # bs-roformer-infer tự tải model mặc định ở lần chạy đầu tiên.
+    cmd = [
+        cli,
+        "--input_folder",
+        str(input_dir),
+        "--store_dir",
+        str(output_dir),
+    ]
+
+    if device not in {"auto", ""}:
+        print(
+            "[warn] --device được giữ để tương thích command hiện tại, "
+            "nhưng bs-roformer-infer CLI sẽ tự chọn device nếu không hỗ trợ flag này."
+        )
+
+    subprocess.run(cmd, check=True)
 
     print("Hoàn tất tách stem.")
 
