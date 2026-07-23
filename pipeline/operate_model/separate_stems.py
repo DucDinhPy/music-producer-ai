@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import tempfile
@@ -77,7 +78,7 @@ def separate_folder(
             print(f"Convert sang WAV tạm: {wav_input_dir}")
 
             for index, src in enumerate(audio_files, start=1):
-                dst = wav_input_dir / f"{index:05d}_{src.stem}.wav"
+                dst = wav_input_dir / _safe_wav_name(index, src)
                 if src.suffix.lower() == ".wav":
                     shutil.copy2(src, dst)
                 else:
@@ -99,9 +100,9 @@ def separate_folder(
                         check=True,
                     )
 
-            _run_bs_roformer(cli, wav_input_dir, output_dir)
+            _run_bs_roformer(cli, wav_input_dir, output_dir, device)
     else:
-        _run_bs_roformer(cli, input_dir, output_dir)
+        _run_bs_roformer(cli, input_dir, output_dir, device)
 
     print("Hoàn tất tách stem.")
 
@@ -110,19 +111,29 @@ def _run_bs_roformer(
     cli: str,
     input_dir: Path,
     output_dir: Path,
+    device: str,
 ) -> None:
     # Dùng CLI chính thức để tránh phụ thuộc Python API nội bộ của package.
     # bs-roformer-infer tự tải model mặc định ở lần chạy đầu tiên.
-    subprocess.run(
-        [
-            cli,
-            "--input_folder",
-            str(input_dir),
-            "--store_dir",
-            str(output_dir),
-        ],
-        check=True,
-    )
+    cmd = [
+        cli,
+        "--input_folder",
+        str(input_dir.resolve()),
+        "--store_dir",
+        str(output_dir.resolve()),
+    ]
+
+    if device not in {"", "auto"}:
+        cmd.extend(["--device", device])
+
+    subprocess.run(cmd, check=True)
+
+
+def _safe_wav_name(index: int, src: Path) -> str:
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", src.stem).strip("._-")
+    if not stem:
+        stem = "audio"
+    return f"{index:05d}_{stem[:80]}.wav"
 
 
 def main() -> None:
