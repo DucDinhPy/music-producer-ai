@@ -3,8 +3,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import numpy as np
+import soundfile as sf
 import torch
-import torchaudio
 
 
 def generate_musicgen_melody(
@@ -32,7 +33,9 @@ def generate_musicgen_melody(
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    melody, sample_rate = torchaudio.load(str(melody_path))
+    melody_np, sample_rate = sf.read(str(melody_path), dtype="float32", always_2d=True)
+    # soundfile returns samples x channels; AudioCraft expects channels x samples.
+    melody = torch.from_numpy(melody_np.T.copy())
     if duration is None:
         duration = min(30.0, melody.shape[-1] / sample_rate)
 
@@ -61,7 +64,22 @@ def generate_musicgen_melody(
         )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    torchaudio.save(str(output_path), wav[0].detach().cpu(), model.sample_rate)
+    generated = wav[0].detach().float().cpu().numpy()
+    print(f"Generated shape: {generated.shape}")
+    print(f"Generated min:   {float(generated.min()):.6f}")
+    print(f"Generated max:   {float(generated.max()):.6f}")
+    print(f"Generated peak:  {float(np.max(np.abs(generated))):.6f}")
+
+    if generated.ndim == 2:
+        if generated.shape[0] in {1, 2}:
+            generated = generated.T
+        elif generated.shape[1] in {1, 2}:
+            pass
+        else:
+            raise RuntimeError(f"Unexpected generated audio shape: {generated.shape}")
+
+    # FLOAT avoids PCM_16 clipping while debugging model quality.
+    sf.write(str(output_path), generated, model.sample_rate, subtype="FLOAT")
     print(f"Wrote: {output_path}")
 
 
